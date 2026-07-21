@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>CSV Candlestick Chart</title>
+
+    <script src="https://unpkg.com/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: #131722;
+            color: #d1d4dc;
+            overflow: hidden;
+        }
+
+        .app {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        .toolbar {
+            height: 60px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 10px 18px;
+            background: #1e222d;
+            border-bottom: 1px solid #2a2e39;
+        }
+
+        .title {
+            font-size: 17px;
+            font-weight: bold;
+            color: white;
+        }
+
+        .file-input {
+            padding: 8px;
+            border: 1px solid #363a45;
+            border-radius: 5px;
+            background: #131722;
+            color: #d1d4dc;
+        }
+
+        button {
+            height: 36px;
+            padding: 0 15px;
+            border: 1px solid #363a45;
+            border-radius: 5px;
+            background: #2962ff;
+            color: white;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #1e53e5;
+        }
+
+        .status {
+            margin-left: auto;
+            font-size: 13px;
+            color: #9598a1;
+        }
+
+        .chart-container {
+            position: relative;
+            flex: 1;
+            min-height: 0;
+        }
+
+        #chart {
+            width: 100%;
+            height: 100%;
+        }
+
+        .ohlc {
+            position: absolute;
+            top: 12px;
+            left: 15px;
+            z-index: 10;
+            display: flex;
+            gap: 12px;
+            padding: 8px 12px;
+            border-radius: 5px;
+            background: rgba(19, 23, 34, 0.85);
+            font-size: 13px;
+            pointer-events: none;
+        }
+
+        .open,
+        .high,
+        .low,
+        .close {
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="app">
+
+    <div class="toolbar">
+        <div class="title">Candlestick CSV Viewer</div>
+
+        <input
+            type="file"
+            id="csvFile"
+            class="file-input"
+            accept=".csv"
+        >
+
+        <select id="timeframe" class="file-input" disabled>
+            <option value="1">1 minute</option>
+            <option value="3">3 minutes</option>
+            <option value="5" selected>5 minutes</option>
+            <option value="10">10 minutes</option>
+            <option value="15">15 minutes</option>
+            <option value="30">30 minutes</option>
+            <option value="60">1 hour</option>
+            <option value="240">4 hours</option>
+            <option value="1440">1 day</option>
+        </select>
+
+        <button id="fitButton">Fit Chart</button>
+
+        <div id="status" class="status">
+            Select a CSV file
+        </div>
+    </div>
+
+    <div class="chart-container">
+
+        <div class="ohlc">
+            <span>O: <span id="openValue">--</span></span>
+            <span>H: <span id="highValue">--</span></span>
+            <span>L: <span id="lowValue">--</span></span>
+            <span>C: <span id="closeValue">--</span></span>
+        </div>
+
+        <div id="chart"></div>
+    </div>
+
+</div>
+
+<script>
+    const chartContainer = document.getElementById("chart");
+    const fileInput = document.getElementById("csvFile");
+    const timeframeSelect = document.getElementById("timeframe");
+    const statusElement = document.getElementById("status");
+
+    let sourceCandles = [];
+    let loadedCandles = [];
+
+    const chart = LightweightCharts.createChart(chartContainer, {
+        layout: {
+            background: {
+                type: LightweightCharts.ColorType.Solid,
+                color: "#131722"
+            },
+            textColor: "#d1d4dc"
+        },
+
+        grid: {
+            vertLines: {
+                color: "#1f2430"
+            },
+            horzLines: {
+                color: "#1f2430"
+            }
+        },
+
+        crosshair: {
+            mode: LightweightCharts.CrosshairMode.Normal
+        },
+
+        rightPriceScale: {
+            borderColor: "#2a2e39"
+        },
+
+        timeScale: {
+            borderColor: "#2a2e39",
+            timeVisible: true,
+            secondsVisible: false,
+            rightOffset: 5,
+            barSpacing: 8
+        },
+
+        handleScroll: {
+            mouseWheel: true,
+            pressedMouseMove: true
+        },
+
+        handleScale: {
+            mouseWheel: true,
+            pinch: true,
+            axisPressedMouseMove: true
+        }
+    });
+
+    const candleSeries = chart.addCandlestickSeries({
+        upColor: "#089981",
+        downColor: "#f23645",
+
+        borderUpColor: "#089981",
+        borderDownColor: "#f23645",
+
+        wickUpColor: "#089981",
+        wickDownColor: "#f23645"
+    });
+
+    function parseNumber(value) {
+        const number = Number(value);
+
+        return Number.isFinite(number) ? number : null;
+    }
+
+    function parseDate(dateValue) {
+        if (!dateValue) {
+            return null;
+        }
+
+        // Preserve the wall-clock time written in the CSV. Creating a Date
+        // directly would convert values such as 09:00:00+05:30 to 03:30 UTC,
+        // while Lightweight Charts displays timestamps on a UTC-based scale.
+        const match = String(dateValue).match(
+            /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/
+        );
+
+        if (match) {
+            return Math.floor(Date.UTC(
+                Number(match[1]),
+                Number(match[2]) - 1,
+                Number(match[3]),
+                Number(match[4]),
+                Number(match[5]),
+                Number(match[6] || 0)
+            ) / 1000);
+        }
+
+        const parsedDate = new Date(dateValue);
+
+        if (Number.isNaN(parsedDate.getTime())) {
+            return null;
+        }
+
+        return Math.floor(parsedDate.getTime() / 1000);
+    }
+
+    function updateOHLC(candle) {
+        if (!candle) {
+            return;
+        }
+
+        document.getElementById("openValue").textContent =
+            candle.open.toFixed(2);
+
+        document.getElementById("highValue").textContent =
+            candle.high.toFixed(2);
+
+        document.getElementById("lowValue").textContent =
+            candle.low.toFixed(2);
+
+        document.getElementById("closeValue").textContent =
+            candle.close.toFixed(2);
+    }
+
+    function aggregateCandles(candles, timeframeMinutes) {
+        const bucketSeconds = timeframeMinutes * 60;
+        const aggregated = [];
+
+        for (const candle of candles) {
+            const bucketTime =
+                Math.floor(candle.time / bucketSeconds) * bucketSeconds;
+            const current = aggregated[aggregated.length - 1];
+
+            if (!current || current.time !== bucketTime) {
+                aggregated.push({
+                    time: bucketTime,
+                    open: candle.open,
+                    high: candle.high,
+                    low: candle.low,
+                    close: candle.close
+                });
+            } else {
+                current.high = Math.max(current.high, candle.high);
+                current.low = Math.min(current.low, candle.low);
+                current.close = candle.close;
+            }
+        }
+
+        return aggregated;
+    }
+
+    function renderTimeframe() {
+        const timeframeMinutes = Number(timeframeSelect.value);
+        loadedCandles = aggregateCandles(sourceCandles, timeframeMinutes);
+        candleSeries.setData(loadedCandles);
+        chart.timeScale().fitContent();
+
+        if (loadedCandles.length > 0) {
+            updateOHLC(loadedCandles[loadedCandles.length - 1]);
+        }
+
+        statusElement.textContent =
+            `${loadedCandles.length} candles (${timeframeSelect.options[timeframeSelect.selectedIndex].text})`;
+    }
+
+    function loadCSV(file) {
+        statusElement.textContent = "Loading CSV...";
+
+        Papa.parse(file, {
+            header: true,
+            skipEmptyLines: true,
+
+            complete: function(results) {
+                const candles = results.data
+                    .map(row => {
+                        const time = parseDate(row.date);
+                        const open = parseNumber(row.open);
+                        const high = parseNumber(row.high);
+                        const low = parseNumber(row.low);
+                        const close = parseNumber(row.close);
+
+                        if (
+                            time === null ||
+                            open === null ||
+                            high === null ||
+                            low === null ||
+                            close === null
+                        ) {
+                            return null;
+                        }
+
+                        return {
+                            time,
+                            open,
+                            high,
+                            low,
+                            close
+                        };
+                    })
+                    .filter(candle => candle !== null)
+                    .sort((a, b) => a.time - b.time);
+
+                const uniqueCandles = [];
+
+                const timestamps = new Set();
+
+                for (const candle of candles) {
+                    if (!timestamps.has(candle.time)) {
+                        timestamps.add(candle.time);
+                        uniqueCandles.push(candle);
+                    }
+                }
+
+                sourceCandles = uniqueCandles;
+                timeframeSelect.disabled = sourceCandles.length === 0;
+                renderTimeframe();
+            },
+
+            error: function(error) {
+                console.error(error);
+
+                statusElement.textContent =
+                    "Unable to read CSV file";
+            }
+        });
+    }
+
+    fileInput.addEventListener("change", function(event) {
+        const file = event.target.files[0];
+
+        if (!file) {
+            return;
+        }
+
+        loadCSV(file);
+    });
+
+    timeframeSelect.addEventListener("change", renderTimeframe);
+
+    document
+        .getElementById("fitButton")
+        .addEventListener("click", function() {
+            chart.timeScale().fitContent();
+        });
+
+    chart.subscribeCrosshairMove(parameter => {
+        if (!parameter.time) {
+            if (loadedCandles.length > 0) {
+                updateOHLC(
+                    loadedCandles[loadedCandles.length - 1]
+                );
+            }
+
+            return;
+        }
+
+        const candle = loadedCandles.find(
+            item => item.time === parameter.time
+        );
+
+        if (candle) {
+            updateOHLC(candle);
+        }
+    });
+
+    const resizeObserver = new ResizeObserver(entries => {
+        const container = entries[0];
+
+        chart.applyOptions({
+            width: container.contentRect.width,
+            height: container.contentRect.height
+        });
+    });
+
+    resizeObserver.observe(chartContainer);
+</script>
+
+</body>
+</html>
