@@ -1,0 +1,5 @@
+.venv
+.env
+logs/
+560977_1min.csv
+OpenAPIScripMaster.csv
